@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+.venv/
+clab-*/
+*.bak
+.DS_Store
