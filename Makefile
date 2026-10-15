@@ -1,7 +1,7 @@
 TOPO := topology/netauto.clab.yml
 PY   := python3
 
-.PHONY: deploy destroy status ospf routes ping render push verify apply test
+.PHONY: deploy destroy status ospf routes ping render push verify apply test backup drift remediate history inject-drift
 
 deploy:
 	sudo containerlab deploy -t $(TOPO)
@@ -39,3 +39,21 @@ apply:
 
 test:
 	$(PY) -m pytest -q
+
+# Backups and drift (piece 3)
+backup:
+	$(PY) automation/netauto.py backup
+
+drift:
+	$(PY) automation/netauto.py drift
+
+remediate:
+	$(PY) automation/netauto.py remediate
+
+history:
+	git log --oneline --stat -- backups
+
+# Demo helper: change r1 by hand so there is something to detect
+inject-drift:
+	@docker exec clab-netauto-r1 vtysh -c "configure terminal" -c "interface eth2" -c "ip ospf cost 50" 2>&1 | grep -v "vtysh.conf" || true
+	@echo "Injected: ip ospf cost 50 on r1 eth2 (not in inventory). Now run: make drift"

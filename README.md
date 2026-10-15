@@ -2,7 +2,7 @@
 
 A free network automation lab. Source-of-truth inventory, Jinja2 templates, Nornir push and verify, and tests, all running in containers with no paid tools.
 
-> Status: work in progress. Pieces 1 and 2 of 5 are done.
+> Status: work in progress. Pieces 1 to 3 of 5 are done.
 
 ## Topology
 
@@ -32,7 +32,8 @@ inventory/*.yaml  +  templates/frr.conf.j2
 - `inventory/` is the source of truth: router IDs, loopbacks, interface IPs.
 - `templates/frr.conf.j2` generates every router config from that data.
 - `tests/` proves the template reproduces the known-good configs byte for byte.
-- `automation/netauto.py` renders, pushes and verifies with Nornir.
+- `automation/netauto.py` renders, pushes, verifies, backs up, checks drift and remediates with Nornir.
+- `automation/drift.py` compares intended vs running config semantically (per-context line sets, platform noise ignored).
 
 ## Run it (GitHub Codespaces)
 
@@ -45,6 +46,8 @@ make deploy    # boot the lab
 make ospf      # OSPF neighbors on all routers
 make test      # template vs golden configs
 make apply     # render + push + verify
+make backup    # save running configs and commit to Git
+make drift     # running vs intended
 make destroy   # tear it down
 ```
 
@@ -54,16 +57,30 @@ make destroy   # tear it down
 2. Run `make apply`.
 3. Run `make routes`. r1 now reaches 3.3.3.3 through r2 instead of directly.
 
+## Demo: backups and drift detection
+
+```bash
+make backup          # first backup, committed to Git
+make inject-drift    # someone changes r1 by hand
+make drift           # reports the unexpected line, exits 1 on purpose
+make backup          # new Git commit with the change
+make history         # who/when: see the config change in Git
+make remediate       # removes the unexpected line, re-checks
+make drift           # no drift
+```
+
+Drift is found by comparing the rendered intended config with the device's real `show running-config`, per context, so ordering and FRR header lines do not cause false alarms. Tests use real captured output (`tests/fixtures/`).
+
 ## Known limits
 
-- The push is merge-only (it adds and updates config, it does not remove). A diff-based push comes with drift detection in piece 3.
+- `push` is merge-only (adds and updates, never removes). Use `make remediate` to remove unexpected config.
 - Routers are containers without SSH, so the push uses `docker exec ... vtysh`. On real gear this task would use SSH (Netmiko/NAPALM). Render and verify stay the same.
 
 ## Roadmap
 
 - [x] 1. Lab boots with OSPF
 - [x] 2. Jinja2 templates and Nornir push
-- [ ] 3. Git backups and drift detection
+- [x] 3. Git backups and drift detection
 - [ ] 4. Compliance checks and GitHub Actions
 - [ ] 5. Docs, diagram and screenshots
 

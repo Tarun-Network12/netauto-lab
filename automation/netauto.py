@@ -1,19 +1,23 @@
 #!/usr/bin/env python3
-"""netauto: render, push and verify FRR configs for the lab with Nornir.
+"""netauto: render, push, verify, back up and audit FRR configs with Nornir.
 
 Usage:
-    python3 automation/netauto.py render
-    python3 automation/netauto.py push
-    python3 automation/netauto.py verify
-    python3 automation/netauto.py apply     # render + push + verify
+    python3 automation/netauto.py render      # inventory + template -> rendered/
+    python3 automation/netauto.py push        # push rendered config (merge only)
+    python3 automation/netauto.py verify      # OSPF neighbors all Full?
+    python3 automation/netauto.py apply       # render + push + verify
+    python3 automation/netauto.py backup      # save running configs, commit to Git
+    python3 automation/netauto.py drift       # running vs intended, exit 1 on drift
+    python3 automation/netauto.py remediate   # fix drift, then re-check
 
 Transport note: the lab routers are plain containers with no SSH daemon, so
-configs are pushed with `docker exec ... vtysh`. On real gear the push task
-would use SSH (Netmiko/NAPALM). The render and verify logic stays the same.
+commands go through `docker exec ... vtysh`. On real gear the transport tasks
+would use SSH (Netmiko/NAPALM). Render, drift and verify logic stays the same.
 """
 import argparse
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from nornir import InitNornir
@@ -21,10 +25,12 @@ from nornir.core.task import Result, Task
 from nornir_utils.plugins.functions import print_result
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from drift import compare  # noqa: E402
 from render import render_config  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 RENDERED = ROOT / "rendered"
+BACKUPS = ROOT / "backups"
 NOISE = "Can't open configuration file /etc/frr/vtysh.conf"
 
 
@@ -39,9 +45,28 @@ def _vtysh(container: str, commands: list) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, capture_output=True, text=True)
 
 
-def render_task(task: Task) -> Result:
+def _errors(output: str) -> list:
+    return [l for l in output.splitlines() if l.startswith("%") or "Unknown command" in l]
+
+
+def _running(container: str) -> str:
+    proc = _vtysh(container, ["show running-config"])
+    out = _clean(proc.stdout + proc.stderr)
+    if proc.returncode != 0 or not out:
+        raise RuntimeError(f"could not read running-config from {container}: {out}")
+    return out + "\n"
+
+
+def _intended(task: Task) -> str:
     data = {k: task.host[k] for k in task.host.keys()}
-    text = render_config(task.host.name, data)
+    return render_config(task.host.name, data)
+
+
+# --- tasks -----------------------------------------------------------------
+
+
+def render_task(task: Task) -> Result:
+    text = _intended(task)
     RENDERED.mkdir(exist_ok=True)
     (RENDERED / f"{task.host.name}.conf").write_text(text)
     return Result(host=task.host, result=f"rendered {len(text.splitlines())} lines")
@@ -56,8 +81,7 @@ def push_task(task: Task) -> Result:
             commands.append(line)
     proc = _vtysh(task.host.hostname, commands)
     out = _clean(proc.stdout + proc.stderr)
-    errors = [l for l in out.splitlines() if l.startswith("%") or "Unknown command" in l]
-    failed = proc.returncode != 0 or bool(errors)
+    failed = proc.returncode != 0 or bool(_errors(out))
     return Result(host=task.host, result=out or "pushed, no output", failed=failed)
 
 
@@ -70,27 +94,88 @@ def verify_task(task: Task) -> Result:
     return Result(host=task.host, result=msg, failed=(full != expected))
 
 
+def backup_task(task: Task) -> Result:
+    text = _running(task.host.hostname)
+    BACKUPS.mkdir(exist_ok=True)
+    path = BACKUPS / f"{task.host.name}.conf"
+    previous = path.read_text() if path.exists() else None
+    path.write_text(text)
+    state = "new" if previous is None else ("changed" if previous != text else "unchanged")
+    return Result(host=task.host, result=f"backup {state} ({len(text.splitlines())} lines)")
+
+
+def drift_task(task: Task) -> Result:
+    result = compare(_intended(task), _running(task.host.hostname))
+    return Result(host=task.host, result=result.report(), failed=not result.clean)
+
+
+def remediate_task(task: Task) -> Result:
+    intended = _intended(task)
+    before = compare(intended, _running(task.host.hostname))
+    if before.clean:
+        return Result(host=task.host, result="no drift, nothing to do")
+
+    commands = before.commands()
+    proc = _vtysh(task.host.hostname, commands)
+    out = _clean(proc.stdout + proc.stderr)
+    after = compare(intended, _running(task.host.hostname))
+
+    lines = [before.report(), "applied:"] + [f"  {c}" for c in commands[1:]]
+    lines.append("verified: no drift" if after.clean else "STILL DRIFTING:\n" + after.report())
+    failed = proc.returncode != 0 or bool(_errors(out)) or not after.clean
+    return Result(host=task.host, result="\n".join(lines), failed=failed)
+
+
+# --- git -------------------------------------------------------------------
+
+
+def commit_backups() -> None:
+    def git(*args, check=True):
+        return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=check)
+
+    try:
+        git("add", "backups")
+        if git("diff", "--cached", "--quiet", "--", "backups", check=False).returncode == 0:
+            print("\nNo config changes since the last backup. Nothing to commit.")
+            return
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        git("commit", "-m", f"backup: running configs {stamp}", "--", "backups")
+        print("\nCommitted config backup. See history with: make history")
+    except subprocess.CalledProcessError as exc:
+        print(f"\nBackup files written, but the Git commit failed:\n{exc.stderr}")
+
+
+# --- cli -------------------------------------------------------------------
+
+STEPS = {
+    "render": [render_task],
+    "push": [push_task],
+    "verify": [verify_task],
+    "apply": [render_task, push_task, verify_task],
+    "backup": [backup_task],
+    "drift": [drift_task],
+    "remediate": [remediate_task],
+}
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("action", choices=["render", "push", "verify", "apply"])
+    parser.add_argument("action", choices=sorted(STEPS))
     args = parser.parse_args()
 
     nr = InitNornir(config_file=str(ROOT / "config.yaml"))
-    steps = {
-        "render": [render_task],
-        "push": [push_task],
-        "verify": [verify_task],
-        "apply": [render_task, push_task, verify_task],
-    }[args.action]
 
     any_failed = False
-    for step in steps:
+    for step in STEPS[args.action]:
         print(f"\n--- {step.__name__} ---")
         result = nr.run(task=step, name=step.__name__)
         print_result(result)
         any_failed = any_failed or result.failed
         if result.failed:
             break
+
+    if args.action == "backup" and not any_failed:
+        commit_backups()
     return 1 if any_failed else 0
 
 
