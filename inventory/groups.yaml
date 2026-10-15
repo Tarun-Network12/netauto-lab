@@ -1,0 +1,4 @@
+---
+lab:
+  data:
+    role: frr-router

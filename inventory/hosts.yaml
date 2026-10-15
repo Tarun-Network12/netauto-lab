@@ -1,0 +1,37 @@
+---
+r1:
+  hostname: clab-netauto-r1
+  groups: [lab]
+  data:
+    router_id: 1.1.1.1
+    loopback: 1.1.1.1/32
+    interfaces:
+      - name: eth1
+        ip: 10.0.12.1/30
+      - name: eth2
+        ip: 10.0.13.1/30
+        
+
+r2:
+  hostname: clab-netauto-r2
+  groups: [lab]
+  data:
+    router_id: 2.2.2.2
+    loopback: 2.2.2.2/32
+    interfaces:
+      - name: eth1
+        ip: 10.0.12.2/30
+      - name: eth2
+        ip: 10.0.23.1/30
+
+r3:
+  hostname: clab-netauto-r3
+  groups: [lab]
+  data:
+    router_id: 3.3.3.3
+    loopback: 3.3.3.3/32
+    interfaces:
+      - name: eth1
+        ip: 10.0.23.2/30
+      - name: eth2
+        ip: 10.0.13.2/30
