@@ -4,31 +4,41 @@
 
 A free network automation lab. Source-of-truth inventory, Jinja2 templates, Nornir push and verify, and tests, all running in containers with no paid tools.
 
-> Status: work in progress. Pieces 1 to 4 of 5 are done.
+## What this shows
+
+- Source-of-truth inventory rendered into configs with Jinja2, proven by golden-config tests.
+- Config push and verification with Nornir.
+- Git-backed config history and semantic drift detection with safe remediation.
+- Compliance rules and inventory validation that run in CI on every push, no lab needed.
+- Everything runs free in GitHub Codespaces. Lab and synthetic data only.
 
 ## Topology
 
-```
-        r1 (1.1.1.1)
-       /            \
-  10.0.12.0/30   10.0.13.0/30
-     /                \
-r2 (2.2.2.2) -------- r3 (3.3.3.3)
-          10.0.23.0/30
+```mermaid
+graph LR
+  r1["r1<br/>1.1.1.1"] ---|"10.0.12.0/30"| r2["r2<br/>2.2.2.2"]
+  r2 ---|"10.0.23.0/30"| r3["r3<br/>3.3.3.3"]
+  r1 ---|"10.0.13.0/30"| r3
 ```
 
-Three FRRouting routers in a triangle, OSPF area 0.
+Three FRRouting routers in a triangle, OSPF area 0, built with Containerlab.
 
 ## How it works
 
-```
-inventory/*.yaml  +  templates/frr.conf.j2
-        |
-        v   (Jinja2 via automation/render.py)
-   rendered/r1..r3.conf
-        |
-        v   (Nornir push task)
-   running routers  ->  verify task (OSPF neighbors Full)
+```mermaid
+flowchart TD
+  inv["inventory/*.yaml<br/>source of truth"] --> val["validate<br/>inventory + rules"]
+  tpl["templates/frr.conf.j2"] --> rnd["render<br/>Jinja2"]
+  val --> rnd
+  rnd --> push["push<br/>Nornir"]
+  push --> rtr[("r1 r2 r3<br/>FRR routers")]
+  rtr --> ver["verify<br/>OSPF neighbors Full"]
+  rtr --> bak["backup<br/>commit to Git"]
+  rtr --> dft["drift<br/>running vs intended"]
+  dft -->|"unexpected config"| rem["remediate<br/>remove, re-check"]
+  rem --> rtr
+  rtr --> cmp["compliance<br/>rules on live config"]
+  gh["GitHub Actions"] -.->|"tests + validate on every push"| val
 ```
 
 - `inventory/` is the source of truth: router IDs, loopbacks, interface IPs.
@@ -94,7 +104,11 @@ Try it: add a duplicate `eth1` entry to r1 in `inventory/hosts.yaml` and run `ma
 - [x] 2. Jinja2 templates and Nornir push
 - [x] 3. Git backups and drift detection
 - [x] 4. Compliance checks and GitHub Actions
-- [ ] 5. Docs, diagram and screenshots
+- [x] 5. Docs, diagram and screenshots
+
+## More
+
+A full walkthrough with real terminal output is in [docs/DEMO.md](docs/DEMO.md).
 
 ## Data note
 
