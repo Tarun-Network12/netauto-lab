@@ -9,6 +9,8 @@ Usage:
     python3 automation/netauto.py backup      # save running configs, commit to Git
     python3 automation/netauto.py drift       # running vs intended, exit 1 on drift
     python3 automation/netauto.py remediate   # fix drift, then re-check
+    python3 automation/netauto.py compliance  # running configs vs compliance rules
+    python3 automation/netauto.py validate    # inventory + rendered configs (no lab needed, used in CI)
 
 Transport note: the lab routers are plain containers with no SSH daemon, so
 commands go through `docker exec ... vtysh`. On real gear the transport tasks
@@ -25,6 +27,7 @@ from nornir.core.task import Result, Task
 from nornir_utils.plugins.functions import print_result
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from compliance import check_config, validate_inventory  # noqa: E402
 from drift import compare  # noqa: E402
 from render import render_config  # noqa: E402
 
@@ -57,9 +60,12 @@ def _running(container: str) -> str:
     return out + "\n"
 
 
+def _data(host) -> dict:
+    return {k: host[k] for k in host.keys()}
+
+
 def _intended(task: Task) -> str:
-    data = {k: task.host[k] for k in task.host.keys()}
-    return render_config(task.host.name, data)
+    return render_config(task.host.name, _data(task.host))
 
 
 # --- tasks -----------------------------------------------------------------
@@ -126,6 +132,19 @@ def remediate_task(task: Task) -> Result:
     return Result(host=task.host, result="\n".join(lines), failed=failed)
 
 
+def compliance_task(task: Task) -> Result:
+    problems = check_config(task.host.name, _data(task.host), _running(task.host.hostname))
+    msg = "compliant" if not problems else "NON-COMPLIANT\n" + "\n".join(f"  {p}" for p in problems)
+    return Result(host=task.host, result=msg, failed=bool(problems))
+
+
+def validate_task(task: Task) -> Result:
+    """Offline: does the rendered config meet the rules? No devices touched."""
+    problems = check_config(task.host.name, _data(task.host), _intended(task))
+    msg = "rendered config compliant" if not problems else "\n".join(f"  {p}" for p in problems)
+    return Result(host=task.host, result=msg, failed=bool(problems))
+
+
 # --- git -------------------------------------------------------------------
 
 
@@ -155,7 +174,10 @@ STEPS = {
     "backup": [backup_task],
     "drift": [drift_task],
     "remediate": [remediate_task],
+    "compliance": [compliance_task],
+    "validate": [validate_task],
 }
+INVENTORY_CHECKED = {"render", "apply", "validate"}
 
 
 def main() -> int:
@@ -164,6 +186,14 @@ def main() -> int:
     args = parser.parse_args()
 
     nr = InitNornir(config_file=str(ROOT / "config.yaml"))
+
+    if args.action in INVENTORY_CHECKED:
+        errors = validate_inventory({h.name: _data(h) for h in nr.inventory.hosts.values()})
+        if errors:
+            print("\nInventory problems:")
+            print("\n".join(f"  {e}" for e in errors))
+            return 1
+        print("\nInventory OK")
 
     any_failed = False
     for step in STEPS[args.action]:

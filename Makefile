@@ -1,7 +1,7 @@
 TOPO := topology/netauto.clab.yml
 PY   := python3
 
-.PHONY: deploy destroy status ospf routes ping render push verify apply test backup drift remediate history inject-drift
+.PHONY: deploy destroy status ospf routes ping render push verify apply test backup drift remediate history inject-drift validate compliance
 
 deploy:
 	sudo containerlab deploy -t $(TOPO)
@@ -57,3 +57,10 @@ history:
 inject-drift:
 	@docker exec clab-netauto-r1 vtysh -c "configure terminal" -c "interface eth2" -c "ip ospf cost 50" 2>&1 | grep -v "vtysh.conf" || true
 	@echo "Injected: ip ospf cost 50 on r1 eth2 (not in inventory). Now run: make drift"
+
+# Compliance and CI (piece 4)
+validate:
+	$(PY) automation/netauto.py validate
+
+compliance:
+	$(PY) automation/netauto.py compliance
